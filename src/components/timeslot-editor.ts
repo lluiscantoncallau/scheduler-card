@@ -1,22 +1,18 @@
-import { LitElement, html, css, CSSResultGroup } from 'lit';
+import { LitElement, html, css, CSSResultGroup, CSSResult } from 'lit';
 import { customElement, property, eventOptions } from 'lit/decorators';
 import { mdiUnfoldMoreVertical } from '@mdi/js';
 import { HomeAssistant } from 'custom-card-helpers';
 
-import { Timeslot, Action, EVariableType, LevelVariable, ListVariable } from '../types';
-import {
-  stringToTime,
-  timeToString,
-  roundTime,
-  parseRelativeTime,
-} from '../data/date-time/time';
+import { Timeslot, Action, EVariableType, LevelVariable, ListVariable, ServiceCall } from '../types';
+import { stringToTime, timeToString, roundTime, parseRelativeTime } from '../data/date-time/time';
 import { compareActions } from '../data/actions/compare_actions';
 import { levelVariableDisplay } from '../data/variables/level_variable';
-import { unique, PrettyPrintName, getLocale } from '../helpers';
+import { unique, PrettyPrintName, getLocale, omit } from '../helpers';
 import { localize } from '../localize/localize';
 import { stringToDate } from '../data/date-time/string_to_date';
 import { formatAmPm, formatTime, TimeFormat } from '../data/date-time/format_time';
 import { absToRelTime } from '../data/date-time/relative_time';
+import { computeTimeslotColors, SlotColorMapping } from '../data/item_display/compute_timeslot_colors';
 
 const SEC_PER_DAY = 86400;
 const SEC_PER_HOUR = 3600;
@@ -57,6 +53,8 @@ export class TimeslotEditor extends LitElement {
 
   zoomFactor = 1;
 
+  _colorMap?: SlotColorMapping[];
+
   constructor() {
     super();
     this.handleResize = this.handleResize.bind(this);
@@ -90,31 +88,24 @@ export class TimeslotEditor extends LitElement {
     return html`
       <div class="outer">
         <div
-          class="wrapper ${this.isDragging ? '' : 'selectable'}"
+          class="wrapper ${this.isDragging ? '' : 'selectable'} ${this.activeMarker === null && this.activeSlot !== null
+            ? 'activeSlot'
+            : ''}"
           style="width: ${width.toFixed(2)}px; margin-left: ${left.toFixed(2)}px"
         >
           ${this.renderSlots()}
         </div>
       </div>
       <div class="outer">
-        <div
-          class="time-wrapper"
-          style="width: ${width.toFixed(2)}px; margin-left: ${left.toFixed(2)}px"
-        >
+        <div class="time-wrapper" style="width: ${width.toFixed(2)}px; margin-left: ${left.toFixed(2)}px">
           ${this.renderTimes()}
         </div>
       </div>
-      <mwc-button
-        @click=${this._addSlot}
-        ?disabled=${this.activeSlot === null || this.slots.length >= 24}
-      >
+      <mwc-button @click=${this._addSlot} ?disabled=${this.activeSlot === null || this.slots.length >= 24}>
         <ha-icon icon="hass:plus-circle-outline" class="padded-right"></ha-icon>
         ${this.hass.localize('ui.dialogs.helper_settings.input_select.add')}
       </mwc-button>
-      <mwc-button
-        @click=${this._removeSlot}
-        ?disabled=${this.activeSlot === null || this.slots.length <= 1}
-      >
+      <mwc-button @click=${this._removeSlot} ?disabled=${this.activeSlot === null || this.slots.length <= 1}>
         <ha-icon icon="hass:minus-circle-outline" class="padded-right"></ha-icon>
         ${this.hass.localize('ui.common.delete')}
       </mwc-button>
@@ -127,28 +118,27 @@ export class TimeslotEditor extends LitElement {
     const left = (-this.rangeMin / (this.rangeMax - this.rangeMin)) * fullWidth;
     let start = left;
 
+    this._colorMap = computeTimeslotColors(this.slots, this.actions, this._colorMap);
+
     return this.slots.map((e, i) => {
-      const w =
-        ((stringToTime(e.stop!, this.hass!) || SEC_PER_DAY) -
-          stringToTime(e.start, this.hass!)) /
-        SEC_PER_DAY;
+      const w = ((stringToTime(e.stop!, this.hass!) || SEC_PER_DAY) - stringToTime(e.start, this.hass!)) / SEC_PER_DAY;
       const actionText = this.computeActionDisplay(e) || '';
       const textWidth = (actionText || '').length * 5 + 10;
 
       const leftMargin = start < 0 && start + w * width > 0 ? -start + 5 : 15;
-      const rightMargin =
-        start + w * width > fullWidth && start < fullWidth
-          ? w * width - (fullWidth - start) + 5
-          : 15;
+      const rightMargin = start + w * width > fullWidth && start < fullWidth ? w * width - (fullWidth - start) + 5 : 15;
       const availableWidth = w * width - leftMargin - rightMargin;
       start += w * width;
 
+      const action: ServiceCall = e.actions.length ? omit(e.actions[0], 'entity_id') : { service: '' };
+      const slotColor = this._colorMap!.find(e => compareActions(e.action, action))!.color;
+
       return html`
         <div
-          class="slot${this.activeSlot == i && this.activeMarker === null
-            ? ' active'
-            : ''} ${w * width < 2 ? 'noborder' : ''}"
-          style="width: ${Math.floor(w * 10000) / 100}%"
+          class="slot${this.activeSlot == i && this.activeMarker === null ? ' active' : ''} ${w * width < 2
+            ? 'noborder'
+            : ''}"
+          style="width: ${Math.floor(w * 10000) / 100}%; --slot-background-color: ${slotColor.join(', ')}"
           @click=${this._selectSlot}
           slot="${i}"
         >
@@ -168,14 +158,8 @@ export class TimeslotEditor extends LitElement {
             : ''}
           ${i > 0 ? this.renderTooltip(i) : ''}
 
-          <span
-            style="margin-left: ${leftMargin.toFixed(
-              2
-            )}px; margin-right: ${rightMargin.toFixed(2)}px"
-          >
-            ${actionText &&
-            (availableWidth > textWidth / 3 || availableWidth > 50) &&
-            availableWidth > 30
+          <span style="margin-left: ${leftMargin.toFixed(2)}px; margin-right: ${rightMargin.toFixed(2)}px">
+            ${actionText && (availableWidth > textWidth / 3 || availableWidth > 50) && availableWidth > 30
               ? actionText
               : ''}
           </span>
@@ -189,23 +173,11 @@ export class TimeslotEditor extends LitElement {
 
     return html`
       <div class="tooltip-container center">
-        <div
-          class="tooltip ${this.activeMarker == i ? 'active' : ''}"
-          @click=${this._selectMarker}
-        >
+        <div class="tooltip ${this.activeMarker == i ? 'active' : ''}" @click=${this._selectMarker}>
           ${res
             ? html`
-                <ha-icon
-                  icon="hass:${res.event == 'sunrise'
-                    ? 'weather-sunny'
-                    : 'weather-night'}"
-                ></ha-icon>
-                ${res.sign}
-                ${formatTime(
-                  stringToDate(res.offset),
-                  getLocale(this.hass!),
-                  TimeFormat.twenty_four
-                )}
+                <ha-icon icon="hass:${res.event == 'sunrise' ? 'weather-sunny' : 'weather-night'}"></ha-icon>
+                ${res.sign} ${formatTime(stringToDate(res.offset), getLocale(this.hass!), TimeFormat.twenty_four)}
               `
             : formatTime(stringToDate(this.slots[i].start), getLocale(this.hass!))}
         </div>
@@ -224,26 +196,14 @@ export class TimeslotEditor extends LitElement {
     let stepSize = Math.ceil(24 / (fullWidth / segmentWidth));
     while (!allowedStepSizes.includes(stepSize)) stepSize++;
 
-    const nums = [
-      0,
-      ...Array.from(Array(24 / stepSize - 1).keys()).map(e => (e + 1) * stepSize),
-      24,
-    ];
+    const nums = [0, ...Array.from(Array(24 / stepSize - 1).keys()).map(e => (e + 1) * stepSize), 24];
 
     return nums.map(e => {
       const isSpacer = e == 0 || e == 24;
       const w = isSpacer ? (stepSize / 48) * 100 : (stepSize / 24) * 100;
       return html`
-        <div
-          style="width: ${Math.floor(w * 100) / 100}%"
-          class="${isSpacer ? '' : 'time'}"
-        >
-          ${!isSpacer
-            ? formatTime(
-                stringToDate(timeToString(e * SEC_PER_HOUR)),
-                getLocale(this.hass!)
-              )
-            : ''}
+        <div style="width: ${Math.floor(w * 100) / 100}%" class="${isSpacer ? '' : 'time'}">
+          ${!isSpacer ? formatTime(stringToDate(timeToString(e * SEC_PER_HOUR)), getLocale(this.hass!)) : ''}
         </div>
       `;
     });
@@ -260,9 +220,7 @@ export class TimeslotEditor extends LitElement {
 
         if (
           actionConfig.variables &&
-          Object.keys(actionConfig.variables).some(
-            field => action.service_data && field in action.service_data
-          )
+          Object.keys(actionConfig.variables).some(field => action.service_data && field in action.service_data)
         ) {
           return Object.entries(actionConfig.variables)
             .filter(([field]) => action.service_data && field in action.service_data)
@@ -274,17 +232,13 @@ export class TimeslotEditor extends LitElement {
               } else if (variable.type == EVariableType.List) {
                 variable = variable as ListVariable;
                 const listItem = variable.options.find(e => e.value == value);
-                return PrettyPrintName(
-                  listItem && listItem.name ? listItem.name : String(value)
-                );
+                return PrettyPrintName(listItem && listItem.name ? listItem.name : String(value));
               } else return '';
             })
             .join(', ');
         }
         return PrettyPrintName(
-          actionConfig.name ||
-            localize(`services.${action.service}`, getLocale(this.hass!)) ||
-            action.service
+          actionConfig.name || localize(`services.${action.service}`, getLocale(this.hass!)) || action.service
         );
       })
     ).join(', ');
@@ -306,19 +260,16 @@ export class TimeslotEditor extends LitElement {
 
     const i = Number(leftSlot.getAttribute('slot'));
 
-    const Tmin =
-      i > 0 ? stringToTime(this.slots[i].start, this.hass!) + 60 * this.stepSize : 0;
+    const Tmin = i > 0 ? stringToTime(this.slots[i].start, this.hass!) + 60 * this.stepSize : 0;
 
     const Tmax =
       i < this.slots.length - 2
-        ? (stringToTime(this.slots[i + 1].stop!, this.hass!) || SEC_PER_DAY) -
-          60 * this.stepSize
+        ? (stringToTime(this.slots[i + 1].stop!, this.hass!) || SEC_PER_DAY) - 60 * this.stepSize
         : SEC_PER_DAY;
 
     this.isDragging = true;
 
-    const trackElement = (rightSlot.parentElement as HTMLElement)
-      .parentElement as HTMLElement;
+    const trackElement = (rightSlot.parentElement as HTMLElement).parentElement as HTMLElement;
     const trackCoords = trackElement.getBoundingClientRect();
 
     let mouseMoveHandler = (ev: MouseEvent | TouchEvent) => {
@@ -346,8 +297,7 @@ export class TimeslotEditor extends LitElement {
           stepSize: this.stepSize,
         });
       else {
-        time =
-          Math.round(time) >= SEC_PER_DAY ? SEC_PER_DAY : roundTime(time, this.stepSize);
+        time = Math.round(time) >= SEC_PER_DAY ? SEC_PER_DAY : roundTime(time, this.stepSize);
         timeString = timeToString(time);
       }
 
@@ -471,8 +421,7 @@ export class TimeslotEditor extends LitElement {
 
   private _removeSlot() {
     if (this.activeSlot === null) return;
-    const cutIndex =
-      this.activeSlot == this.slots.length - 1 ? this.activeSlot - 1 : this.activeSlot;
+    const cutIndex = this.activeSlot == this.slots.length - 1 ? this.activeSlot - 1 : this.activeSlot;
 
     this.slots = [
       ...this.slots.slice(0, cutIndex),
@@ -492,17 +441,13 @@ export class TimeslotEditor extends LitElement {
 
   private _updateTooltips() {
     const fullWidth = parseFloat(getComputedStyle(this).getPropertyValue('width'));
-    const tooltips = (this.shadowRoot?.querySelectorAll(
-      '.tooltip'
-    ) as unknown) as HTMLElement[];
+    const tooltips = (this.shadowRoot?.querySelectorAll('.tooltip') as unknown) as HTMLElement[];
 
     const getBounds = (el: HTMLElement) => {
       const width = el.offsetWidth;
       const left = el.parentElement!.offsetLeft + el.offsetLeft - 15;
-      if (el.parentElement!.classList.contains('left'))
-        return [left + width / 2, left + (3 * width) / 2];
-      else if (el.parentElement!.classList.contains('right'))
-        return [left - width / 2, left + width / 2];
+      if (el.parentElement!.classList.contains('left')) return [left + width / 2, left + (3 * width) / 2];
+      else if (el.parentElement!.classList.contains('right')) return [left - width / 2, left + width / 2];
       return [left, left + width];
     };
 
@@ -524,8 +469,7 @@ export class TimeslotEditor extends LitElement {
           let marginLeft = getBounds(tooltip)[0],
             marginRight = fullWidth - getBounds(tooltip)[1];
 
-          if (i > 0 && slot - 1 == this.activeSlot)
-            marginLeft -= getBounds(tooltips[i - 1])[1];
+          if (i > 0 && slot - 1 == this.activeSlot) marginLeft -= getBounds(tooltips[i - 1])[1];
           else if (i + 1 < tooltips.length && slot == this.activeSlot) {
             const w = getBounds(tooltips[i + 1])[0];
             marginRight -= w < 0 ? 0 : fullWidth - w;
@@ -635,6 +579,7 @@ export class TimeslotEditor extends LitElement {
         display: block;
         max-width: 100%;
         overflow: hidden;
+        --slot-background-color: var(--rgb-primary-color);
       }
       div.outer {
         width: 100%;
@@ -645,19 +590,18 @@ export class TimeslotEditor extends LitElement {
       div.wrapper,
       div.time-wrapper {
         white-space: nowrap;
-        transition: width 0.2s cubic-bezier(0.17, 0.67, 0.83, 0.67),
-          margin 0.2s cubic-bezier(0.17, 0.67, 0.83, 0.67);
+        transition: width 0.2s cubic-bezier(0.17, 0.67, 0.83, 0.67), margin 0.2s cubic-bezier(0.17, 0.67, 0.83, 0.67);
       }
       .slot {
         float: left;
-        background: rgba(var(--rgb-primary-color), 0.7);
+        background: rgba(var(--slot-background-color), 0.85);
         height: 60px;
         cursor: pointer;
         box-sizing: border-box;
         transition: background 0.1s cubic-bezier(0.17, 0.67, 0.83, 0.67);
       }
       .wrapper.selectable .slot:hover {
-        background: rgba(var(--rgb-primary-color), 0.85);
+        background: rgba(var(--slot-background-color), 1);
       }
       .slot:not(:first-child) {
         border-left: 1px solid var(--card-background-color);
@@ -665,14 +609,22 @@ export class TimeslotEditor extends LitElement {
       .slot:not(:last-child) {
         border-right: 1px solid var(--card-background-color);
       }
-      .slot.active {
-        background: rgba(var(--rgb-accent-color), 0.7);
-      }
       .slot.noborder {
         border: none;
       }
-      .wrapper.selectable .slot.active:hover {
-        background: rgba(var(--rgb-accent-color), 0.85);
+      .wrapper.activeSlot .slot {
+        background: rgba(var(--slot-background-color), 0.5);
+      }
+      .wrapper.activeSlot .slot:hover {
+        background: rgba(var(--slot-background-color), 0.6);
+      }
+      .slot.active,
+      .wrapper.activeSlot .slot.active {
+        background: rgba(var(--slot-background-color), 0.8);
+      }
+      .slot.active:hover,
+      .wrapper.activeSlot .slot.active:hover {
+        background: rgba(var(--slot-background-color), 1);
       }
       div.time-wrapper div {
         float: left;
